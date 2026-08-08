@@ -1,0 +1,14 @@
+# Required secrets. Replace these placeholders locally and store the production
+# values as encrypted Cloudflare Worker secrets.
+RELAY_API_KEY=replace-with-at-least-32-random-characters
+SMTP_USERNAME=your-full-address@gmail.com
+SMTP_PASSWORD=your-16-character-google-app-password
+
+# Optional environment bindings with safe defaults.
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_FROM_EMAIL=your-full-address@gmail.com
+SMTP_FROM_NAME=NICDAI
+SMTP_EHLO_NAME=nicdai-email-relay.workers.dev
+SMTP_TIMEOUT_MS=30000

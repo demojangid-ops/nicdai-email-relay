@@ -7,8 +7,10 @@
     "enabled": true
   },
   "vars": {
+    "SMTP_HOST": "smtp.gmail.com",
     "SMTP_PORT": "465",
     "SMTP_SECURE": "true",
+    "SMTP_FROM_NAME": "NICDAI",
     "SMTP_EHLO_NAME": "nicdai-email-relay.workers.dev",
     "SMTP_TIMEOUT_MS": "30000"
   },

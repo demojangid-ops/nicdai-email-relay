@@ -37,18 +37,37 @@ Generate a relay key locally:
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-Store configuration as encrypted Worker secrets. Do not commit these values:
+Store the authentication key and SMTP credentials as encrypted Worker secrets.
+Do not commit their real values:
 
 ```bash
 npx wrangler secret put RELAY_API_KEY
-npx wrangler secret put SMTP_HOST
 npx wrangler secret put SMTP_USERNAME
 npx wrangler secret put SMTP_PASSWORD
-npx wrangler secret put SMTP_FROM_EMAIL
-npx wrangler secret put SMTP_FROM_NAME
 ```
 
-For Gmail with implicit TLS, keep the committed defaults:
+`RELAY_API_KEY`, `SMTP_USERNAME`, and `SMTP_PASSWORD` are required and
+intentionally have no usable default. Default credentials would make the relay
+unsafe. `SMTP_FROM_EMAIL` defaults to `SMTP_USERNAME` when it is not set.
+
+All other runtime settings are Cloudflare environment bindings. Safe defaults
+are committed in `wrangler.jsonc` and are also applied by the Worker if a binding
+is omitted:
+
+| Environment binding | Default |
+| --- | --- |
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `465` |
+| `SMTP_SECURE` | `true` |
+| `SMTP_FROM_EMAIL` | Value of `SMTP_USERNAME` |
+| `SMTP_FROM_NAME` | `NICDAI` |
+| `SMTP_EHLO_NAME` | `nicdai-email-relay.workers.dev` |
+| `SMTP_TIMEOUT_MS` | `30000` |
+
+Copy `.dev.vars.example` to `.dev.vars` for local development. The real
+`.dev.vars` file is ignored by Git.
+
+For Gmail with implicit TLS, use the defaults and configure the required values:
 
 ```text
 SMTP_HOST=smtp.gmail.com
@@ -135,7 +154,7 @@ never written to application logs.
 In Cloudflare Workers & Pages, import the GitHub repository and use:
 
 ```text
-Root directory: cloudflare-email-worker
+Root directory: /
 Build command: npm run build
 Deploy command: npm run deploy
 ```
