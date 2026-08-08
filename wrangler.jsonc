@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nicdai-email-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-06",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "SMTP_PORT": "465",
+    "SMTP_SECURE": "true",
+    "SMTP_EHLO_NAME": "nicdai-email-relay.workers.dev",
+    "SMTP_TIMEOUT_MS": "30000"
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "EMAIL_QUEUE",
+        "queue": "nicdai-email-delivery"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "nicdai-email-delivery",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "retry_delay": 30,
+        "dead_letter_queue": "nicdai-email-dead-letter"
+      }
+    ]
+  }
+}
