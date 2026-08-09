@@ -1,7 +1,8 @@
 # NICDAI Cloudflare SMTP relay
 
 This Worker accepts authenticated email requests from the NICDAI Render service,
-adds them to Cloudflare Queues, returns `202 Accepted`, and sends them through the
+stages PDF attachments in a private Cloudflare R2 bucket, adds small delivery
+messages to Cloudflare Queues, returns `202 Accepted`, and sends them through the
 configured SMTP server in a background queue consumer.
 
 The Worker accepts `POST /send` with:
@@ -12,13 +13,22 @@ The Worker accepts `POST /send` with:
   "cc": ["support@example.com"],
   "subject": "NICDAI email verification",
   "body": "<p>Your verification code is ABC123.</p>",
-  "bodyType": "html"
+  "bodyType": "html",
+  "attachments": [{
+    "filename": "NICDAI-2026-EXAMPLE.pdf",
+    "contentType": "application/pdf",
+    "size": 123456,
+    "sha256": "64-lowercase-hex-characters",
+    "contentBase64": "base64-encoded-pdf"
+  }]
 }
 ```
 
 `to` is required and may be a string or array. `cc` is optional. `bodyType` must
 be `text` or `html`. The maximum body size is 80,000 UTF-8 bytes and the combined
-recipient limit is 50.
+recipient limit is 50. Attachments are optional, restricted to three validated
+PDF files, 10 MB per file and 15 MB total. The Render application calculates the
+size and SHA-256 digest automatically.
 
 ## One-time Cloudflare setup
 
@@ -29,7 +39,21 @@ npm install
 npx wrangler login
 npx wrangler queues create nicdai-email-delivery
 npx wrangler queues create nicdai-email-dead-letter
+npx wrangler r2 bucket create nicdai-email-attachments
 ```
+
+Keep `nicdai-email-attachments` private. The committed `wrangler.jsonc` exposes
+it to the Worker only as `ATTACHMENT_BUCKET`; no public R2 URL or R2 API token is
+required. Add an R2 lifecycle rule that expires every object after one day so a
+PDF left behind by a dead-lettered message is removed automatically:
+
+```bash
+npx wrangler r2 bucket lifecycle add nicdai-email-attachments --expire-days 1
+```
+
+In the dashboard, the equivalent setting is **R2 object storage →
+nicdai-email-attachments → Settings → Object lifecycle rules**. Use no prefix and
+set expiration to one day.
 
 Generate a relay key locally:
 
@@ -61,7 +85,7 @@ is omitted:
 | `SMTP_SECURE` | `true` |
 | `SMTP_FROM_EMAIL` | Value of `SMTP_USERNAME` |
 | `SMTP_FROM_NAME` | `NICDAI` |
-| `SMTP_EHLO_NAME` | `nicdai-email-relay.workers.dev` |
+| `SMTP_EHLO_NAME` | `nicdai-email-relay.demojangid.workers.dev` |
 | `SMTP_TIMEOUT_MS` | `30000` |
 
 Copy `.dev.vars.example` to `.dev.vars` for local development. The real
@@ -93,24 +117,28 @@ npm run deploy
 The health endpoint is:
 
 ```text
-https://nicdai-email-relay.YOUR-SUBDOMAIN.workers.dev/health
+https://nicdai-email-relay.demojangid.workers.dev/health
 ```
+
+It should report both `queueConfigured` and `attachmentStorageConfigured` as
+`true` before certificate delivery is enabled.
 
 ## Connect Render
 
 Add these Render environment variables:
 
 ```text
-EMAIL_RELAY_URL=https://nicdai-email-relay.YOUR-SUBDOMAIN.workers.dev/send
+EMAIL_RELAY_URL=https://nicdai-email-relay.demojangid.workers.dev/send
 EMAIL_RELAY_KEY=the-same-value-stored-as-RELAY_API_KEY
-EMAIL_RELAY_TIMEOUT_MS=10000
+EMAIL_RELAY_TIMEOUT_MS=30000
 EMAIL_FROM=the-same-address-as-the-worker-SMTP_FROM_EMAIL
 ```
 
-The NICDAI server uses this relay automatically for mail without attachments.
-If direct SMTP is also configured, it is used when the relay HTTP request fails
-and for certificate emails with PDF attachments. The current Worker payload
-does not accept attachments.
+The NICDAI server uses this relay exclusively for every email when the relay URL
+and key are configured, including certificate emails with PDF attachments. Attachments are staged privately in R2,
+integrity-checked before delivery, attached to a multipart MIME message, and
+deleted after Gmail accepts the message. Render does not attempt direct SMTP if
+the Worker rejects or cannot accept a relay request.
 
 Call the Worker only from the Render backend, never from browser JavaScript:
 
@@ -151,14 +179,14 @@ never written to application logs.
 
 ## Deploy from GitHub
 
-In Cloudflare Workers & Pages, import the GitHub repository and use:
+In Cloudflare Workers & Pages, import the `nicdai-app` GitHub repository and use:
 
 ```text
-Root directory: /
+Root directory: cloudflare-email-worker
 Build command: npm run build
 Deploy command: npm run deploy
 ```
 
-Create both queues and add every secret in the Cloudflare dashboard before the
-first Git-connected deployment. The committed `wrangler.jsonc` connects the
-producer and consumer to the same delivery queue.
+Create both queues and the private R2 bucket before the first Git-connected
+deployment, then add every secret in the Cloudflare dashboard. The committed
+`wrangler.jsonc` connects the producer, consumer, and `ATTACHMENT_BUCKET` binding.
