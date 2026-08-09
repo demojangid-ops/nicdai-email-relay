@@ -6,6 +6,12 @@ import {
   normalizeQueuedEmail
 } from './message.js';
 import { smtpConfiguration } from './config.js';
+import {
+  ATTACHMENT_QUEUE_DELAY_SECONDS,
+  deleteStagedAttachments,
+  hydrateEmailAttachments,
+  stageEmailAttachments
+} from './attachments.js';
 
 const JSON_HEADERS = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
@@ -22,7 +28,8 @@ export default {
         status: 'ok',
         service: 'nicdai-email-relay',
         queueConfigured: Boolean(env.EMAIL_QUEUE),
-        attachmentStorageConfigured: Boolean(env.ATTACHMENT_BUCKET)
+        attachmentStorage: 'workers-kv',
+        attachmentStorageConfigured: Boolean(env.ATTACHMENT_KV)
       });
     }
     if (request.method !== 'POST' || url.pathname !== '/send') {
@@ -50,7 +57,14 @@ export default {
       const requestId = crypto.randomUUID();
       const staged = await stageEmailAttachments(message, requestId, env);
       stagedKeys = staged.stagedKeys;
-      await env.EMAIL_QUEUE.send({ ...staged.message, requestId, queuedAt: new Date().toISOString() });
+      const queuedEmail = { ...staged.message, requestId, queuedAt: new Date().toISOString() };
+      if (stagedKeys.length) {
+        await env.EMAIL_QUEUE.send(queuedEmail, {
+          delaySeconds: ATTACHMENT_QUEUE_DELAY_SECONDS
+        });
+      } else {
+        await env.EMAIL_QUEUE.send(queuedEmail);
+      }
       console.log(JSON.stringify({
         event: 'email_queued',
         requestId,
@@ -105,132 +119,6 @@ export default {
     }
   }
 };
-
-async function stageEmailAttachments(message, requestId, env) {
-  const attachments = message.attachments || [];
-  if (!attachments.length) return { message, stagedKeys: [] };
-  if (!env.ATTACHMENT_BUCKET) {
-    throw new Error('ATTACHMENT_BUCKET is not configured.');
-  }
-
-  const stagedAttachments = [];
-  const stagedKeys = [];
-  try {
-    for (const [index, attachment] of attachments.entries()) {
-      const bytes = base64ToBytes(attachment.contentBase64);
-      if (!isPdf(bytes)) {
-        throw new RelayValidationError(`attachments[${index}] is not a valid PDF payload.`);
-      }
-      const actualSha256 = await sha256Hex(bytes);
-      if (actualSha256 !== attachment.sha256) {
-        throw new RelayValidationError(`attachments[${index}] failed its SHA-256 integrity check.`);
-      }
-      const storageKey = `relay/${requestId}/${index}.pdf`;
-      await env.ATTACHMENT_BUCKET.put(storageKey, bytes, {
-        httpMetadata: {
-          contentType: attachment.contentType,
-          contentDisposition: `attachment; filename="${attachment.filename}"`,
-          cacheControl: 'private, no-store'
-        },
-        customMetadata: {
-          filename: attachment.filename,
-          sha256: attachment.sha256,
-          size: String(attachment.size)
-        }
-      });
-      stagedKeys.push(storageKey);
-      stagedAttachments.push({
-        filename: attachment.filename,
-        contentType: attachment.contentType,
-        size: attachment.size,
-        sha256: attachment.sha256,
-        storageKey
-      });
-    }
-  } catch (error) {
-    await deleteStagedAttachments(stagedKeys, env, 'staging_failed');
-    throw error;
-  }
-
-  return {
-    message: { ...message, attachments: stagedAttachments },
-    stagedKeys
-  };
-}
-
-async function hydrateEmailAttachments(message, env) {
-  const attachments = message.attachments || [];
-  if (!attachments.length) return message;
-  if (!env.ATTACHMENT_BUCKET) {
-    throw new Error('ATTACHMENT_BUCKET is not configured.');
-  }
-
-  const hydratedAttachments = [];
-  for (const attachment of attachments) {
-    const object = await env.ATTACHMENT_BUCKET.get(attachment.storageKey);
-    if (!object) throw new Error('A staged email attachment is missing.');
-    if (object.size !== attachment.size) {
-      throw new Error('A staged email attachment failed its size integrity check.');
-    }
-    const bytes = new Uint8Array(await object.arrayBuffer());
-    if (!isPdf(bytes) || await sha256Hex(bytes) !== attachment.sha256) {
-      throw new Error('A staged email attachment failed its content integrity check.');
-    }
-    hydratedAttachments.push({
-      filename: attachment.filename,
-      contentType: attachment.contentType,
-      size: attachment.size,
-      sha256: attachment.sha256,
-      contentBase64: bytesToBase64(bytes)
-    });
-  }
-  return { ...message, attachments: hydratedAttachments };
-}
-
-async function deleteStagedAttachments(keys, env, reason) {
-  if (!keys.length || !env.ATTACHMENT_BUCKET) return;
-  try {
-    await env.ATTACHMENT_BUCKET.delete(keys);
-  } catch (error) {
-    console.error(JSON.stringify({
-      event: 'email_attachment_cleanup_failed',
-      reason,
-      attachmentCount: keys.length,
-      error: safeError(error)
-    }));
-  }
-}
-
-function base64ToBytes(value) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function bytesToBase64(bytes) {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  }
-  return btoa(binary);
-}
-
-async function sha256Hex(bytes) {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function isPdf(bytes) {
-  return bytes.length >= 5
-    && bytes[0] === 0x25
-    && bytes[1] === 0x50
-    && bytes[2] === 0x44
-    && bytes[3] === 0x46
-    && bytes[4] === 0x2d;
-}
 
 async function sendSmtpEmail(message, requestId, env) {
   const config = smtpConfiguration(env);
