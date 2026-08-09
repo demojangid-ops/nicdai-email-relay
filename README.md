@@ -1,7 +1,7 @@
 # NICDAI Cloudflare SMTP relay
 
 This Worker accepts authenticated email requests from the NICDAI Render service,
-stages PDF attachments in a private Cloudflare R2 bucket, adds small delivery
+stages PDF attachments temporarily in Cloudflare Workers KV, adds small delivery
 messages to Cloudflare Queues, returns `202 Accepted`, and sends them through the
 configured SMTP server in a background queue consumer.
 
@@ -39,21 +39,31 @@ npm install
 npx wrangler login
 npx wrangler queues create nicdai-email-delivery
 npx wrangler queues create nicdai-email-dead-letter
-npx wrangler r2 bucket create nicdai-email-attachments
+npx wrangler kv namespace create nicdai-email-attachments
 ```
 
-Keep `nicdai-email-attachments` private. The committed `wrangler.jsonc` exposes
-it to the Worker only as `ATTACHMENT_BUCKET`; no public R2 URL or R2 API token is
-required. Add an R2 lifecycle rule that expires every object after one day so a
-PDF left behind by a dead-lettered message is removed automatically:
+Copy the 32-character namespace ID printed by Wrangler. Before deploying from a
+terminal, expose it only to the build process:
 
 ```bash
-npx wrangler r2 bucket lifecycle add nicdai-email-attachments --expire-days 1
+export ATTACHMENT_KV_NAMESPACE_ID=replace-with-the-32-character-namespace-id
 ```
 
-In the dashboard, the equivalent setting is **R2 object storage →
-nicdai-email-attachments → Settings → Object lifecycle rules**. Use no prefix and
-set expiration to one day.
+On Windows Command Prompt use `set ATTACHMENT_KV_NAMESPACE_ID=...`; on
+PowerShell use `$env:ATTACHMENT_KV_NAMESPACE_ID='...'`. The deployment script
+creates a temporary Wrangler configuration that binds that exact namespace as
+`ATTACHMENT_KV`. The namespace ID is an identifier, not a secret, but it should
+still be supplied as configuration instead of hard-coded.
+
+When using the Cloudflare dashboard, create the namespace under **Storage &
+Databases → Workers KV**. Do not look for it in the R2 bucket selector. The
+deployment script binds it by its namespace ID, so a separate manual dashboard
+binding is not required.
+
+The Worker writes binary PDFs directly to KV with a 24-hour expiration, queues
+only their private key and integrity metadata, waits 60 seconds for KV
+propagation, and deletes each key after SMTP accepts the email. No public file
+URL is created.
 
 Generate a relay key locally:
 
@@ -121,7 +131,8 @@ https://nicdai-email-relay.demojangid.workers.dev/health
 ```
 
 It should report both `queueConfigured` and `attachmentStorageConfigured` as
-`true` before certificate delivery is enabled.
+`true`, with `attachmentStorage` set to `workers-kv`, before certificate delivery
+is enabled.
 
 ## Connect Render
 
@@ -135,10 +146,11 @@ EMAIL_FROM=the-same-address-as-the-worker-SMTP_FROM_EMAIL
 ```
 
 The NICDAI server uses this relay exclusively for every email when the relay URL
-and key are configured, including certificate emails with PDF attachments. Attachments are staged privately in R2,
-integrity-checked before delivery, attached to a multipart MIME message, and
-deleted after Gmail accepts the message. Render does not attempt direct SMTP if
-the Worker rejects or cannot accept a relay request.
+and key are configured, including certificate emails with PDF attachments.
+Attachments are staged privately in Workers KV, integrity-checked before
+delivery, attached to a multipart MIME message, and deleted after Gmail accepts
+the message. Render does not attempt direct SMTP if the Worker rejects or cannot
+accept a relay request.
 
 Call the Worker only from the Render backend, never from browser JavaScript:
 
@@ -179,14 +191,27 @@ never written to application logs.
 
 ## Deploy from GitHub
 
-In Cloudflare Workers & Pages, import the `nicdai-app` GitHub repository and use:
+In Cloudflare Workers & Pages, import the `nicdai-email-relay` GitHub repository
+and use:
 
 ```text
-Root directory: cloudflare-email-worker
+Root directory: ./
 Build command: npm run build
 Deploy command: npm run deploy
 ```
 
-Create both queues and the private R2 bucket before the first Git-connected
-deployment, then add every secret in the Cloudflare dashboard. The committed
-`wrangler.jsonc` connects the producer, consumer, and `ATTACHMENT_BUCKET` binding.
+If deploying the embedded Worker from `nicdai-app`, use
+`cloudflare-email-worker` as the root directory instead.
+
+Create both queues and the `nicdai-email-attachments` KV namespace before the
+first Git-connected deployment. In **Workers & Pages → your Worker → Settings →
+Build → Variables and secrets**, add:
+
+```text
+ATTACHMENT_KV_NAMESPACE_ID=the-32-character-KV-namespace-ID
+```
+
+This is a build variable used by `npm run deploy`; it is not a Worker runtime
+secret. Add `RELAY_API_KEY`, `SMTP_USERNAME`, and `SMTP_PASSWORD` as encrypted
+Worker runtime secrets. The generated deployment configuration connects the
+producer, consumer, and `ATTACHMENT_KV` binding to the exact namespace ID.

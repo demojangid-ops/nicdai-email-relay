@@ -14,10 +14,9 @@
     "SMTP_EHLO_NAME": "nicdai-email-relay.demojangid.workers.dev",
     "SMTP_TIMEOUT_MS": "30000"
   },
-  "r2_buckets": [
+  "kv_namespaces": [
     {
-      "binding": "ATTACHMENT_BUCKET",
-      "bucket_name": "nicdai-email-attachments"
+      "binding": "ATTACHMENT_KV"
     }
   ],
   "queues": {
