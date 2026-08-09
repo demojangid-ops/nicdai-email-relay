@@ -5,7 +5,7 @@ export const CONFIG_DEFAULTS = Object.freeze({
   SMTP_PORT: '465',
   SMTP_SECURE: 'true',
   SMTP_FROM_NAME: 'NICDAI',
-  SMTP_EHLO_NAME: 'nicdai-email-relay.workers.dev',
+  SMTP_EHLO_NAME: 'nicdai-email-relay.demojangid.workers.dev',
   SMTP_TIMEOUT_MS: '30000'
 });
 
